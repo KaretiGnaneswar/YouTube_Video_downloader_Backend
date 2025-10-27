@@ -1,40 +1,35 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pytube import YouTube
-from pydantic import BaseModel
 import os
 import tempfile
 import uuid
+import ssl
+
+# Fix SSL certificate issue
+ssl._create_default_https_context = ssl._create_unverified_context
 
 app = FastAPI(title="YouTube Video Downloader API")
 
-# CORS setup
+# Allow frontend access
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Replace with your frontend domain in production
+    allow_origins=["*"],  # Change "*" to your React URL in production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Root endpoint
 @app.get("/")
 async def root():
-    return {"message": "🎥 YouTube Downloader API is running! Visit /docs for details."}
+    return {"message": "🎥 YouTube Downloader API is running!"}
 
 
-# ------------------------------
-# 🔹 Fetch Video Info
-# ------------------------------
-class InfoRequest(BaseModel):
-    url: str
-
+# 🔹 Fetch video info
 @app.post("/api/info")
-async def get_video_info(req: InfoRequest):
+async def get_video_info(url: str = Form(...)):
     try:
-        url = req.url.strip()
-
         if not url.startswith(("http://", "https://")):
             url = "https://" + url
 
@@ -44,12 +39,9 @@ async def get_video_info(req: InfoRequest):
             url = f"https://www.youtube.com/watch?v={video_id}"
 
         yt = YouTube(url)
-
-        # Get available streams
         video_streams = yt.streams.filter(progressive=True, file_extension="mp4").order_by("resolution").desc()
         audio_streams = yt.streams.filter(only_audio=True).order_by("abr").desc()
 
-        # Duration format
         mins, secs = divmod(yt.length, 60)
         hrs, mins = divmod(mins, 60)
         length = f"{hrs:02d}:{mins:02d}:{secs:02d}" if hrs > 0 else f"{mins:02d}:{secs:02d}"
@@ -65,24 +57,14 @@ async def get_video_info(req: InfoRequest):
                 "audio": [{"itag": s.itag, "bitrate": s.abr} for s in audio_streams],
             },
         }
-
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
-# ------------------------------
-# 🔹 Download Video or Audio
-# ------------------------------
-class DownloadRequest(BaseModel):
-    url: str
-    quality: str = "highest"
-
+# 🔹 Download video/audio
 @app.post("/api/download")
-async def download_video(req: DownloadRequest):
+async def download_video(url: str = Form(...), quality: str = Form("highest")):
     try:
-        url = req.url.strip()
-        quality = req.quality
-
         if not url.startswith(("http://", "https://")):
             url = "https://" + url
 
@@ -92,7 +74,6 @@ async def download_video(req: DownloadRequest):
 
         yt = YouTube(url)
 
-        # Choose appropriate stream
         if quality == "highest":
             stream = yt.streams.get_highest_resolution()
         elif quality == "audio_only":
@@ -103,12 +84,11 @@ async def download_video(req: DownloadRequest):
         if not stream:
             raise HTTPException(status_code=400, detail="No suitable stream found")
 
-        # Temporary file setup
+        # Temp file
         safe_title = "".join(c for c in yt.title if c.isalnum() or c in (" ", ".", "_")).rstrip()
         filename = f"{uuid.uuid4()}_{safe_title}.{stream.subtype}"
         filepath = os.path.join(tempfile.gettempdir(), filename)
 
-        # Download
         stream.download(filename=filepath)
 
         return FileResponse(
@@ -122,9 +102,6 @@ async def download_video(req: DownloadRequest):
         raise HTTPException(status_code=400, detail=str(e))
 
 
-# ------------------------------
-# Run the server
-# ------------------------------
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
