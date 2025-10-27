@@ -1,21 +1,22 @@
-from fastapi import FastAPI, HTTPException, Form
+from fastapi import FastAPI, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pytube import YouTube
 import os
 import tempfile
-import ssl
 import uuid
+import ssl
+import certifi
 
-# 🔧 Disable SSL certificate verification for Render
+# Disable SSL verification and force system certificates
 ssl._create_default_https_context = ssl._create_unverified_context
 
-app = FastAPI(title="YouTube Video Downloader API")
+app = FastAPI(title="YouTube Downloader API")
 
-# Allow all origins (for React)
+# Allow frontend requests (React)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # Change this to your frontend domain in production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -23,13 +24,13 @@ app.add_middleware(
 
 @app.get("/")
 async def root():
-    return {"message": "✅ YouTube Downloader API is Live!"}
+    return {"message": "✅ YouTube Downloader Backend is Live on Render!"}
 
 
-# 🎥 Fetch video info
 @app.post("/api/info")
 async def get_video_info(url: str = Form(...)):
     try:
+        # Fix invalid URLs
         if not url.startswith(("http://", "https://")):
             url = "https://" + url
 
@@ -39,18 +40,21 @@ async def get_video_info(url: str = Form(...)):
 
         yt = YouTube(url)
 
+        mins, secs = divmod(yt.length, 60)
+        length = f"{mins}m {secs}s"
+
         return {
             "title": yt.title,
             "author": yt.author,
             "views": yt.views,
             "thumbnail_url": yt.thumbnail_url,
-            "length": yt.length,
+            "length": length,
         }
+
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=f"Failed to fetch info: {e}")
 
 
-# ⬇️ Download endpoint
 @app.post("/api/download")
 async def download_video(url: str = Form(...), quality: str = Form("highest")):
     try:
@@ -63,31 +67,34 @@ async def download_video(url: str = Form(...), quality: str = Form("highest")):
 
         yt = YouTube(url)
 
+        # Select stream
         if quality == "highest":
             stream = yt.streams.get_highest_resolution()
-        elif quality == "audio_only":
+        elif quality == "audio":
             stream = yt.streams.get_audio_only()
         else:
             stream = yt.streams.filter(res=quality, progressive=True).first() or yt.streams.get_highest_resolution()
 
         if not stream:
-            raise HTTPException(status_code=400, detail="No suitable stream found")
+            raise HTTPException(status_code=400, detail="No stream found")
 
-        # Temporary download file
+        # Temporary download
         temp_dir = tempfile.gettempdir()
         filename = f"{uuid.uuid4()}_{yt.title}.{stream.subtype}"
         filepath = os.path.join(temp_dir, filename)
 
+        # Download safely
         stream.download(filename=filepath)
 
         return FileResponse(
             path=filepath,
             filename=f"{yt.title}.{stream.subtype}",
-            media_type=f"video/{stream.subtype}"
+            media_type=f"video/{stream.subtype}",
+            headers={"Content-Disposition": f"attachment; filename={yt.title}.{stream.subtype}"}
         )
 
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=f"Failed to download: {e}")
 
 
 if __name__ == "__main__":
